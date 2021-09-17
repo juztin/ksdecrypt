@@ -97,7 +97,8 @@ func main() {
 			flag.Usage()
 			os.Exit(1)
 		}
-		b, err = readKeystoreKey(keystoreFlag, common.HexToAddress(args[0]))
+		a = common.HexToAddress(args[0])
+		b, err = readKeystoreKey(keystoreFlag, a)
 	} else {
 		a, b, err = readKey(keystoreFlag)
 	}
