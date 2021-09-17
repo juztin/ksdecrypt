@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -19,17 +18,21 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
-func readKey(path string, fi fs.FileInfo) (string, []byte, error) {
-	f, err := os.Open(filepath.Join(path, fi.Name()))
+func readKey(path string) (common.Address, []byte, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return "", nil, err
+		return common.Address{}, nil, err
 	}
 	b, err := io.ReadAll(f)
 	if err != nil {
-		return "", nil, err
+		return common.Address{}, b, err
 	}
 	a := struct{ Address string }{}
-	return a.Address, b, json.Unmarshal(b, &a)
+	err = json.Unmarshal(b, &a)
+	if err != nil {
+		return common.Address{}, b, err
+	}
+	return common.HexToAddress(a.Address), b, nil
 }
 
 func readKeystoreKey(keystorePath string, addr common.Address) ([]byte, error) {
@@ -42,34 +45,23 @@ func readKeystoreKey(keystorePath string, addr common.Address) ([]byte, error) {
 		case mode.IsDir() || !mode.IsRegular():
 			continue
 		}
-		a, b, err := readKey(keystorePath, f)
-		if err == nil && common.HexToAddress(a) == addr {
+		a, b, err := readKey(filepath.Join(keystorePath, f.Name()))
+		//if err == nil && common.HexToAddress(a) == addr {
+		if err == nil && a == addr {
 			return b, nil
 		}
 	}
 	return nil, errors.New("address not found")
 }
 
-func decryptKey(keystorePath string, addr common.Address) (*ecdsa.PrivateKey, error) {
-	s, err := os.Stat(keystorePath)
-	if err != nil {
-		return nil, err
-	}
-	var b []byte
-	if s.IsDir() {
-		b, err = readKeystoreKey(keystorePath, addr)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-	}
-	fmt.Printf("Password for %s: ", addr)
+func decryptKey(key []byte) (*ecdsa.PrivateKey, error) {
+	fmt.Printf("Password: ")
 	passphrase, err := terminal.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Println()
 	if err != nil {
 		return nil, err
 	}
-	k, err := keystore.DecryptKey(b, string(passphrase))
+	k, err := keystore.DecryptKey(key, string(passphrase))
 	if err != nil {
 		return nil, err
 	}
@@ -80,26 +72,43 @@ func main() {
 	var keystoreFlag string
 	home, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to find home directory: %w\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to find home directory: %s\n", err)
 		os.Exit(1)
 	}
 	flag.StringVar(&keystoreFlag, "keystore", filepath.Join(home, ".ethereum/keystore"), "Path to keystore")
 	flag.Parse()
 	args := flag.Args()
-	if len(args) != 1 {
-		fmt.Fprintf(os.Stderr, "Received %d args but expected %d\n", len(args), 1)
-		flag.Usage()
-		os.Exit(1)
-	}
-	if common.IsHexAddress(args[0]) == false {
-		fmt.Fprintln(os.Stderr, "Invalid address")
-		flag.Usage()
-		os.Exit(1)
-	}
-	k, err := decryptKey(keystoreFlag, common.HexToAddress(args[0]))
+
+	s, err := os.Stat(keystoreFlag)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to get key: %w\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to read 'keystore' path: %s\n", err)
 		os.Exit(1)
 	}
-	fmt.Println(hexutil.Encode(crypto.FromECDSA(k))[2:])
+	var b []byte
+	var a common.Address
+	if s.IsDir() {
+		if len(args) != 1 {
+			fmt.Fprintf(os.Stderr, "Received %d args but expected %d\n", len(args), 1)
+			flag.Usage()
+			os.Exit(1)
+		}
+		if common.IsHexAddress(args[0]) == false {
+			fmt.Fprintln(os.Stderr, "Invalid address")
+			flag.Usage()
+			os.Exit(1)
+		}
+		b, err = readKeystoreKey(keystoreFlag, common.HexToAddress(args[0]))
+	} else {
+		a, b, err = readKey(keystoreFlag)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed read key: %s\n", err)
+		os.Exit(1)
+	}
+	k, err := decryptKey(b)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to decrypt key: %s\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Address:     %s\nPrivate Key: 0x%s\n", a, hexutil.Encode(crypto.FromECDSA(k))[2:])
 }
