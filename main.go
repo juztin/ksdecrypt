@@ -1,22 +1,50 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"image/png"
 	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
+	"github.com/boombuler/barcode"
+	"github.com/boombuler/barcode/qr"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"golang.org/x/crypto/ssh/terminal"
 )
+
+func qrCode(s []byte) (*canvas.Image, error) {
+	q, err := qr.Encode(hex.EncodeToString(s), qr.M, qr.Auto)
+	if err == nil {
+		q, err = barcode.Scale(q, 200, 200)
+	}
+	var b bytes.Buffer
+	if err == nil {
+		err = png.Encode(&b, q)
+	}
+	if err != nil {
+		return nil, err
+	}
+	r := fyne.NewStaticResource("QR", b.Bytes())
+	i := canvas.NewImageFromResource(r)
+	i.FillMode = canvas.ImageFillOriginal
+	return i, nil
+}
 
 func readKey(path string) (common.Address, []byte, error) {
 	f, err := os.Open(path)
@@ -69,13 +97,17 @@ func decryptKey(key []byte) (*ecdsa.PrivateKey, error) {
 }
 
 func main() {
-	var keystoreFlag string
+	var (
+		keystoreFlag string
+		qrFlag       bool
+	)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to find home directory: %s\n", err)
 		os.Exit(1)
 	}
 	flag.StringVar(&keystoreFlag, "keystore", filepath.Join(home, ".ethereum/keystore"), "Path to keystore")
+	flag.BoolVar(&qrFlag, "qr", false, "Display the private key as a QR Code")
 	flag.Parse()
 	args := flag.Args()
 
@@ -111,5 +143,20 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to decrypt key: %s\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Address:     %s\nPrivate Key: 0x%s\n", a, hexutil.Encode(crypto.FromECDSA(k))[2:])
+	pkey := crypto.FromECDSA(k)
+	if qrFlag {
+		img, err := qrCode(pkey)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		a := app.New()
+		c := container.NewVBox(img, widget.NewLabel(crypto.PubkeyToAddress(k.PublicKey).Hex()))
+		w := a.NewWindow("KSDecrypt")
+		w.SetContent(c)
+		w.CenterOnScreen()
+		w.ShowAndRun()
+	} else {
+		fmt.Printf("Address:     %s\nPrivate Key: 0x%s\n", a, hexutil.Encode(pkey)[2:])
+	}
 }
